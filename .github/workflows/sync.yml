@@ -1,0 +1,56 @@
+name: Sync Noor
+# Keeps this site identical to the main Noor site, without any personal details.
+# Runs every hour, when this file is saved, or when you press "Run workflow".
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [".github/workflows/sync.yml"]
+permissions:
+  contents: write
+  pages: write
+concurrency:
+  group: sync
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Copy the latest version
+        env:
+          SRC: ${{ secrets.SRC }}
+        run: |
+          set -eu
+          [ -n "$SRC" ] || { echo "Add the SRC secret first (Settings > Secrets and variables > Actions)"; exit 1; }
+          owner=$(echo "$SRC" | cut -d/ -f4)
+          echo "::add-mask::$owner"
+          src=$(mktemp -d)
+          git clone -q --depth 1 "$SRC" "$src/noor"
+          cp "$src/noor/index.html" "$src/noor/sw.js" "$src/noor/manifest.webmanifest" .
+          mkdir -p icons && cp "$src"/noor/icons/*.png icons/
+          sed -i "s#${owner}\.github\.io/noor#your-site.github.io/noor#Ig" index.html
+          printf '# Noor — Duas & Dhikr\n\nDaily duas and dhikr with authentic references. Works offline: open the site, then Add to Home Screen.\n' > README.md
+          if grep -qi "$owner" index.html sw.js manifest.webmanifest README.md; then echo "Personal name still in the files - stopping"; exit 1; fi
+      - name: Publish as one clean update
+        run: |
+          set -eu
+          git add -A
+          changed=$(git status --porcelain | wc -l)
+          commits=$(git rev-list --count HEAD)
+          age=$(( $(date +%s) - $(git log -1 --format=%ct) ))
+          if [ "$changed" -eq 0 ] && [ "$commits" -eq 1 ] && [ "$age" -lt 4320000 ]; then echo "Already up to date"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -q --orphan fresh
+          git commit -q -m "Update Noor"
+          if ! git push -q -f origin fresh:main; then
+            git reset -q --soft origin/main
+            git commit -q -m "Update Noor"
+            git push -q origin HEAD:main
+          fi
+          curl -s -o /dev/null -X POST -H "Authorization: Bearer ${{ github.token }}" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${{ github.repository }}/pages/builds" || true
